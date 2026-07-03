@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, 386, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
+          - goos: darwin
+            goarch: 386
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22.x'
+        cache: false
+
+    - name: Build binaries
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        CGO_ENABLED: 0
+      run: |
+        mkdir -p dist
+        EXT=""
+        if [ "${{ matrix.goos }}" = "windows" ]; then
+          EXT=".exe"
+        fi
+        
+        VERSION=${GITHUB_REF#refs/tags/v}
+        BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
+        GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+        BUILD_ARCH=${{ matrix.goos }}/${{ matrix.goarch }}
+        GO_VERSION=$(go version | cut -d' ' -f3)
+        
+        LDFLAGS="-s -w -X 'github.com/sqpp/flex-golang.Version=${VERSION}' -X 'github.com/sqpp/flex-golang.BuildTime=${BUILD_TIME}' -X 'github.com/sqpp/flex-golang.GitCommit=${GIT_COMMIT}' -X 'github.com/sqpp/flex-golang.BuildArch=${BUILD_ARCH}' -X 'github.com/sqpp/flex-golang.BuildGoVer=${GO_VERSION}' -X 'github.com/sqpp/flex-golang.Author=marcell' -X 'github.com/sqpp/flex-golang.ProjectURL=https://pagercast.com'"
+        
+        go build -v -ldflags="${LDFLAGS}" -o "dist/flex-decode-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" ./cmd/flex-decode
+        
+        cd dist
+        if [ "${{ matrix.goos }}" = "windows" ]; then
+          zip "flex-golang-${{ matrix.goos }}-${{ matrix.goarch }}.zip" *
+        else
+          tar -czf "flex-golang-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" *
+        fi
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: |
+          dist/*.zip
+          dist/*.tar.gz
+        retention-days: 1
+  
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: dist
+        pattern: binaries-*
+        merge-multiple: true
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dist/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
