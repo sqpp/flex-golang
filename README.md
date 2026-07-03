@@ -1,22 +1,25 @@
 # FLEX-GO v1.0.0
 
-A complete Go implementation of the Motorola FLEX pager protocol decoder. Inspired by and compatible with the [`pocsag-golang`](https://github.com/sqpp/pocsag-golang) architecture.
+A complete Go implementation of the Motorola FLEX pager protocol — encoder, decoder, and everything in between. CLI layout mirrors [`pocsag-golang`](https://github.com/sqpp/pocsag-golang).
 
 ## What it can do
 
-- Decode FLEX frames directly from standard WAV audio files (1600/2, 3200/2, 3200/4, 6400/4 modes)
-- Handle Frame Information Words (FIW) and Block Information Words (BIW) natively
-- Full BCH(31,21) and Motorola 4-bit checksum validation and 2-bit error correction
-- Extract Capcode addresses and Alphanumeric/Numeric message payloads
-- Pure native Go DPLL demodulator with phase-locking — no CGO, `sox`, or external C tools required
+- Encode FLEX messages as WAV audio (1600/2, 1600/4, 3200/2, 3200/4, 6400/4)
+- Decode those WAV files back to text with a native PLL demodulator
+- BCH(31,21) codewords with Motorola 4-bit checksum validation
+- Capcode addressing with alphanumeric, numeric, and tone page types
+- Frame Information Words (FIW) and Block Information Words (BIW)
 - JSON output for scripting and API integration
-- Drop-in CLI replacement perfectly mirroring `pocsag-decode`'s payload format
+- Pure Go — no CGO or external demod tools required
 
 ---
 
 ## Installation
 
 ```bash
+# Encoder
+go install github.com/sqpp/flex-golang/cmd/flex-encode@latest
+
 # Decoder
 go install github.com/sqpp/flex-golang/cmd/flex-decode@latest
 ```
@@ -26,48 +29,113 @@ Or build from source:
 ```bash
 git clone https://github.com/sqpp/flex-golang.git
 cd flex-golang
-make build
-# Binary lands in: bin/flex-decode
+make build          # Linux/macOS
+make.bat build      # Windows
+# Binaries land in: bin/flex-encode, bin/flex-decode
 ```
 
 ---
 
-## Decoder (`flex-decode`)
+## Encoder (`flex-encode`)
 
-Decode a WAV file containing 2-FSK or 4-FSK FLEX audio into messages.
+Generate a FLEX message as a WAV file.
 
-**Options:**
-- `-i` / `--input` — input WAV file (required)
+**Required (unless using `--reference` or `--messages`):**
+- `-a` / `--address` — pager address / capcode (1..2097151)
+- `-m` / `--message` — the message text
+
+**Optional:**
+- `-o` / `--output` — output WAV file (default: `output.wav`)
+- `-f` / `--function` — `2` = tone, `3` = numeric, `5` = alphanumeric (default: `5`)
+- `--mode` — FLEX mode: `1600/2`, `1600/4`, `3200/2`, `3200/4`, `6400/4` (default: `1600/2`)
+- `--cycle` / `--frame` — FIW cycle and frame fields (optional)
+- `--reference` — encode the known-good PDW reference page from `tests/test_1600.wav`
+- `--messages` / `--messages-file` — JSON file with a list of message objects
 - `-j` / `--json` — print result as JSON instead of human-readable text
 - `-v` / `--version` — show version info
 
 **Examples:**
 
 ```bash
-flex-decode -i Flex-1600.wav
-flex-decode -i Flex-1600.wav --json
+# Basic message
+flex-encode -a 1913 -m "HELLO WORLD" -o message.wav
+
+# Long flags
+flex-encode --address 1913 --message "HELLO WORLD" --output message.wav
+
+# Reference page (cap 1913, cycle 3, frame 111)
+flex-encode -o reference.wav --reference
+
+# 3200/4 mode
+flex-encode -a 1913 -m "FAST MSG" --mode 3200/4 -o fast.wav
+
+# JSON output (great for scripts)
+flex-encode -a 1913 -m "TEST" -o test.wav --json
+```
+
+**Normal output:**
+```
+✅ Generated message.wav
+   Address: 1913, Function: 5, Baud: 1600, Message: HELLO WORLD
+   Size: 220104 bytes, Duration: 2.50 s
+
+Decode: flex-decode -i message.wav
+```
+
+**JSON output:**
+```json
+{
+  "success": true,
+  "output": "message.wav",
+  "address": 1913,
+  "function": 5,
+  "message": "HELLO WORLD",
+  "baud": 1600,
+  "type": "alphanumeric",
+  "size": 220104,
+  "duration_s": 2.495
+}
+```
+
+---
+
+## Decoder (`flex-decode`)
+
+Decode a FLEX WAV back to text.
+
+**Options:**
+- `-i` / `--input` — input WAV file (required)
+- `--no-tones` — filter out tone-only messages
+- `-j` / `--json` — JSON output
+- `-v` / `--version` — show version info
+
+**Examples:**
+
+```bash
+flex-decode -i message.wav
+flex-decode -i message.wav --json
 flex-decode --version
 ```
 
 **Normal output:**
 ```
 FLEX-1600/2: Decoded messages:
-Address:    1913  Function: 5  ALPHA    Message: NEW JOB: BED: B6 ROOM 19 BED 02
+Address: 0001913  Function: 5  ALPHA    Message: HELLO WORLD
 ```
 
 **JSON output:**
 ```json
 {
+  "success": true,
   "baud": 1600,
   "messages": [
     {
       "address": 1913,
       "function": 5,
-      "message": "NEW JOB: BED: B6 ROOM 19 BED 02",
+      "message": "HELLO WORLD",
       "type": "alphanumeric"
     }
-  ],
-  "success": true
+  ]
 }
 ```
 
@@ -75,33 +143,57 @@ Address:    1913  Function: 5  ALPHA    Message: NEW JOB: BED: B6 ROOM 19 BED 02
 
 ## Using as a Go library
 
+**Encode and write a WAV:**
 ```go
-package main
+import flex "github.com/sqpp/flex-golang"
 
-import (
-    "fmt"
-    "os"
-    flex "github.com/sqpp/flex-golang"
-)
+msg := flex.EncodeMessage{Capcode: 1913, Type: "alpha", Text: "HELLO WORLD"}
+wav, _, _, err := flex.EncodeToWAVBytes([]flex.EncodeMessage{msg}, flex.Mode1600_2, 0, 0)
+os.WriteFile("output.wav", wav, 0644)
+```
 
-func main() {
-    wavData, _ := os.ReadFile("Flex-1600.wav")
-    
-    // Decode audio directly into messages via the native DPLL
-    messages, _ := flex.DecodeFromAudio(wavData)
-    
-    for _, msg := range messages {
-        fmt.Printf("Message to %07d: %s\n", msg.Capcode, msg.Text)
-    }
+**Decode a WAV:**
+```go
+wavData, _ := os.ReadFile("message.wav")
+messages, err := flex.DecodeFromAudio(wavData)
+for _, msg := range messages {
+    fmt.Printf("Message to %07d: %s\n", msg.Capcode, msg.Text)
 }
 ```
 
+**Key functions:**
+
+| Function | Description |
+|----------|-------------|
+| `EncodeToWAVBytes(messages, mode, cycle, frame)` | Encode messages to WAV bytes |
+| `EncodeToWAVFile(messages, path, mode, cycle, frame)` | Encode and write a WAV file |
+| `DecodeFromAudio(wavData)` | Decode a WAV into messages |
+| `DemodulateRawFrames(wavData)` | Demodulate to raw phase codewords |
+| `EncodeModeNames()` | List supported encoder modes |
+| `EncodeModeBitRate(mode)` | On-air bit rate for a mode name |
+
 ---
 
-## Roadmap
+## Testing
 
-- **Encoder (`flex`)**: Generate FLEX WAV signals (Pending)
-- **Burst Encoder (`flex-burst`)**: Pack multiple messages into single frames (Pending)
+```bash
+go test -v ./...
+```
+
+Tests live in the `tests/` directory. Reference captures (`test_1600.wav`, `test_3200.wav`, `test_6400.wav`) are included for roundtrip and decode validation.
+
+---
+
+## About addresses
+
+FLEX addresses are capcodes in the range 1..2097151. The encoder and decoder use the full capcode value. Function codes follow the FLEX vector type field (`2` = tone, `3` = numeric, `5` = alphanumeric).
+
+---
+
+## Credits
+
+Part of [PagerCast](https://pagercast.com). Decoder logic references multimon-ng `demod_flex.c` and PDW `Flex.cpp`.
 
 ## License
-Built natively for pure-Go portability. Decoding architecture originally inspired by PDW and multimon-ng.
+
+BSD-2-Clause — see [LICENSE](LICENSE).

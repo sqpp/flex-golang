@@ -10,18 +10,6 @@ func reverse32(x uint32) uint32 {
 	return r
 }
 
-func FLEXBCHEncode21(info uint32) uint32 {
-	info &= 0x1FFFFF
-	poc := BCHEncode31_21(info)
-	data := poc >> 10
-	parity := poc & 0x3FF
-	cw := data | (parity << 21)
-	if popCount32(cw)&1 != 0 {
-		cw |= 1 << 31
-	}
-	return reverse32(cw)
-}
-
 // reverse21 reverses the lower 21 bits of x.
 func reverse21(x uint32) uint32 {
 	var r uint32
@@ -32,18 +20,30 @@ func reverse21(x uint32) uint32 {
 	return r
 }
 
+// flexEncodeWord builds a FLEX wire codeword matching real OTA captures (test_1600.wav).
+func flexEncodeWord(logical21 uint32) uint32 {
+	infoMSB := reverse21(logical21 & 0x1FFFFF)
+	poc := BCHEncode31_21(infoMSB) & 0x7FFFFFFF
+	rev := (poc << 1) | uint32(popCount32(poc)&1)
+	return reverse32(rev)
+}
+
 func FLEXBCHDecode32(cw uint32) (uint32, int) {
-	// The assembled FLEX word from the DPLL has the first transmitted bit at LSB.
-	// But our BCH decoder expects the first transmitted bit (Even Parity for POCSAG) at LSB.
-	// In FLEX, the Even Parity bit is transmitted LAST. So we must reverse the 32-bit word.
+	// Primary path matches real FLEX captures (reverse32 + BCH MSB layout).
 	rev := reverse32(cw)
 	infoMSB, errs := BCHDecode31_21(rev >> 1)
-	
-	// The decoded info is 21 bits. Since we reversed the input, the output is reversed.
-	// We reverse it back to LSB-first orientation for the rest of the FLEX logic.
-	infoLSB := reverse21(infoMSB)
-	
-	return infoLSB, errs
+	if errs >= 0 {
+		return reverse21(infoMSB), errs
+	}
+
+	// Fallback: bit-0 parity layout.
+	code31 := (cw >> 1) & 0x7FFFFFFF
+	info := code31 >> 10
+	enc := BCHEncode31_21(info) & 0x7FFFFFFF
+	if enc == code31 {
+		return info & 0x1FFFFF, 0
+	}
+	return info & 0x1FFFFF, -1
 }
 
 func FLEXChecksum(info uint32) bool {

@@ -1,1 +1,5 @@
-references/
+bin/
+vendor/
+*.exe
+out.wav
+ref.wav

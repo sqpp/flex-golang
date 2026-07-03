@@ -2,42 +2,42 @@ package flex
 
 import (
 	"fmt"
-	"strings"
+	"runtime"
 )
 
+// Version information - can be set at build time
 var (
 	Version    = "1.0.0"
 	BuildTime  = "unknown"
 	GitCommit  = "unknown"
-	Author     = "unknown"
-	ProjectURL = "unknown"
+	Author     = "marcell"
+	ProjectURL = "https://pagercast.com"
 	BuildArch  = "unknown"
 	BuildGoVer = "unknown"
 )
 
-// GetFullVersionInfo returns a formatted version string for the CLI
+// GetVersionString returns a formatted version string
+func GetVersionString() string {
+	return fmt.Sprintf("FLEX-GO v%s", Version)
+}
+
+// GetBinaryInfo returns binary architecture and runtime information
+func GetBinaryInfo() string {
+	return fmt.Sprintf("Architecture: %s/%s | Go Version: %s", runtime.GOOS, runtime.GOARCH, runtime.Version())
+}
+
+// GetFullVersionInfo returns detailed version information
 func GetFullVersionInfo() string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("FLEX Decoder - v%s\n", Version))
-	
-	if BuildTime != "unknown" {
-		sb.WriteString(fmt.Sprintf("Build Time: %s\n", BuildTime))
-	}
-	if GitCommit != "unknown" {
-		sb.WriteString(fmt.Sprintf("Commit: %s\n", GitCommit))
-	}
-	if BuildArch != "unknown" {
-		sb.WriteString(fmt.Sprintf("Arch: %s\n", BuildArch))
-	}
-	if BuildGoVer != "unknown" {
-		sb.WriteString(fmt.Sprintf("Go Version: %s\n", BuildGoVer))
-	}
-	if Author != "unknown" {
-		sb.WriteString(fmt.Sprintf("Author: %s\n", Author))
-	}
-	if ProjectURL != "unknown" {
-		sb.WriteString(fmt.Sprintf("Project: %s\n", ProjectURL))
-	}
-	
-	return strings.TrimSpace(sb.String())
+	return fmt.Sprintf(`FLEX-GO v%s
+Complete Go implementation of FLEX pager protocol
+Author: %s
+Build Time: %s
+Git Commit: %s
+Build Architecture: %s
+Build Go Version: %s
+Runtime Architecture: %s/%s
+Runtime Go Version: %s
+GitHub: https://github.com/sqpp/flex-golang
+Project: PagerCast | %s
+`, Version, Author, BuildTime, GitCommit, BuildArch, BuildGoVer, runtime.GOOS, runtime.GOARCH, runtime.Version(), ProjectURL)
 }

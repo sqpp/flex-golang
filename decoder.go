@@ -19,7 +19,12 @@ var flexModes = []struct {
 	{0xB068, 1600, 4},
 	{0x7B18, 3200, 2},
 	{0xDEA0, 3200, 4},
-	{0x4C7C, 3200, 4},
+	{0x4C7C, 3200, 4}, // ReFLEX 25; same symbol rate as FLEX 6400/4
+}
+
+// flexBitRate converts FLEX symbol rate + levels to the PDW bit-rate label.
+func flexBitRate(symRate, levels int) int {
+	return symRate * (levels / 2)
 }
 
 // PhaseWords is the number of 32-bit codewords per phase of a FLEX
@@ -84,11 +89,20 @@ type Demodulator struct {
 	sync2Count uint32
 	dataCount  uint32
 	c          int
-	words      [PhaseWords]uint32
+	words      [4 * PhaseWords]uint32
 
 	// Cumulative counters.
 	framesSynced atomic.Uint64
 	pagesEmitted atomic.Uint64
+
+	capturedFrames []RawPhaseFrame
+}
+
+// RawPhaseFrame holds MSB-assembled wire codewords from one FLEX phase-A block.
+type RawPhaseFrame struct {
+	Cycle int
+	Frame int
+	Words [PhaseWords]uint32
 }
 
 // NewDemodulator returns a Demodulator in the marker-hunt state.
@@ -288,15 +302,56 @@ func (d *Demodulator) processSymbol(sym byte) []Message {
 		}
 
 	case stData:
-		bit := uint32(0)
-		if symRectified > 1 {
-			bit = 0x80000000
+		numPhases := int((d.syncBaud / 1600) * (d.syncLevels / 2))
+		if numPhases < 1 {
+			numPhases = 1
+		}
+		if numPhases > 4 {
+			numPhases = 4
 		}
 
-		word := ((d.c >> 5) & 0xFFF8) | (d.c & 7)
-		if word < PhaseWords {
-			d.words[word] >>= 1
-			d.words[word] |= bit
+		symIndex := d.c
+
+		if d.syncLevels == 2 {
+			phase := symIndex % numPhases
+			bitIndex := symIndex / numPhases
+
+			bit := uint32(0)
+			if symRectified > 1 {
+				bit = 0x80000000
+			}
+
+			word := ((bitIndex >> 5) & 0xFFF8) | (bitIndex & 7)
+			if word < PhaseWords {
+				idx := phase*PhaseWords + word
+				d.words[idx] >>= 1
+				d.words[idx] |= bit
+			}
+		} else {
+			msbPhase := (symIndex % (numPhases / 2)) * 2
+			lsbPhase := msbPhase + 1
+			bitIndex := symIndex / (numPhases / 2)
+
+			msbBit := uint32(0)
+			if symRectified > 1 {
+				msbBit = 0x80000000
+			}
+
+			lsbBit := uint32(0)
+			if symRectified == 1 || symRectified == 2 {
+				lsbBit = 0x80000000
+			}
+
+			word := ((bitIndex >> 5) & 0xFFF8) | (bitIndex & 7)
+			if word < PhaseWords {
+				idxMsb := msbPhase*PhaseWords + word
+				d.words[idxMsb] >>= 1
+				d.words[idxMsb] |= msbBit
+
+				idxLsb := lsbPhase*PhaseWords + word
+				d.words[idxLsb] >>= 1
+				d.words[idxLsb] |= lsbBit
+			}
 		}
 		d.c++
 
@@ -336,11 +391,16 @@ func checkSync1(buf uint64) (uint16, bool) {
 
 	lo := uint16(buf & 0xFFFF)
 
-	dist := countBits32(marker^SyncMarker)
+	dist := countBits32(marker ^ SyncMarker)
 	if dist <= 4 {
 		code := ^lo
 		if code == 0x870C || code == 0x870D || code == 0x8720 || code == 0x8721 || code == 0x8722 {
 			return code, true
+		}
+		for _, m := range flexModes {
+			if code == m.code {
+				return code, true
+			}
 		}
 	}
 	return 0, false
@@ -362,7 +422,6 @@ func (d *Demodulator) enterFIW(code uint16) {
 func (d *Demodulator) processFIW() bool {
 	info, errs := FLEXBCHDecode32(d.fiwReg)
 	chk := FLEXChecksum(info)
-	// debug: FIW raw
 	if errs >= 0 && chk {
 		d.cycle = int((info >> 4) & 0x0F)
 		d.frame = int((info >> 8) & 0x7F)
@@ -373,24 +432,49 @@ func (d *Demodulator) processFIW() bool {
 }
 
 func (d *Demodulator) decodeBlock() []Message {
-	infos := make([]uint32, PhaseWords)
-	corr := make([]int, PhaseWords)
-
-	errCnt := 0
-	for i := 0; i < PhaseWords; i++ {
-		info, errs := FLEXBCHDecode32(d.words[i])
-		infos[i] = info & 0x1FFFFF
-		corr[i] = errs
-		if errs >= 0 {
-			errCnt++
-		}
+	numPhases := int((d.syncBaud / 1600) * (d.syncLevels / 2))
+	if numPhases < 1 {
+		numPhases = 1
 	}
-	// debug: Words
-	// debug: Block decode
+	if numPhases > 4 {
+		numPhases = 4
+	}
 
-	msgs := DecodePhase(infos, corr, d.frame, d.cycle, int(d.syncBaud), int(d.syncLevels), 'A')
-	d.pagesEmitted.Add(uint64(len(msgs)))
-	return msgs
+	var allMsgs []Message
+	phaseChars := []byte{'A', 'B', 'C', 'D'}
+
+	for p := 0; p < numPhases; p++ {
+		if p == 0 {
+			var rf RawPhaseFrame
+			rf.Cycle = d.cycle
+			rf.Frame = d.frame
+			copy(rf.Words[:], d.words[0:PhaseWords])
+			d.capturedFrames = append(d.capturedFrames, rf)
+		}
+
+		if p*PhaseWords+PhaseWords > len(d.words) {
+			break
+		}
+
+		infos := make([]uint32, PhaseWords)
+		corr := make([]int, PhaseWords)
+		errCnt := 0
+
+		for i := 0; i < PhaseWords; i++ {
+			info, errs := FLEXBCHDecode32(d.words[p*PhaseWords+i])
+			infos[i] = info & 0x1FFFFF
+			corr[i] = errs
+			if errs >= 0 {
+				errCnt++
+			}
+		}
+		//fmt.Printf("DEBUG: Phase %c decoded %d valid codewords out of %d\n", phaseChars[p], errCnt, PhaseWords)
+		msgs := DecodePhase(infos, corr, d.frame, d.cycle, flexBitRate(int(d.syncBaud), int(d.syncLevels)), int(d.syncLevels), phaseChars[p])
+		allMsgs = append(allMsgs, msgs...)
+	}
+
+	d.pagesEmitted.Add(uint64(len(allMsgs)))
+	return allMsgs
 }
 
 // Stats reports cumulative decode counters.
