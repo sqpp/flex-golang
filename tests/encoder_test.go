@@ -1,26 +1,28 @@
-package flex
+package flex_test
 
 import (
 	"os"
 	"testing"
+
+	flex "github.com/sqpp/flex-golang"
 )
 
 func TestFlexCodewordRoundtrip(t *testing.T) {
 	for _, logical := range []uint32{
-		buildFIWData(0, 0),
-		buildFIWData(5, 42),
+		flex.ExportBuildFIWData(0, 0),
+		flex.ExportBuildFIWData(5, 42),
 	} {
-		cw := encodeWord(logical)
-		got, errs := FLEXBCHDecode32(cw)
-		if got != logical || errs != 0 || !FLEXChecksum(got) {
+		cw := flex.ExportEncodeWord(logical)
+		got, errs := flex.FLEXBCHDecode32(cw)
+		if got != logical || errs != 0 || !flex.ExportFLEXChecksum(got) {
 			t.Fatalf("logical=0x%X cw=0x%08X got=0x%X errs=%d", logical, cw, got, errs)
 		}
 	}
 }
 
 func TestEncodeToWAV(t *testing.T) {
-	msg := EncodeMessage{Capcode: 1913, Type: "alpha", Text: "HELLO WORLD"}
-	wav, nBits, nSamples, err := EncodeToWAVBytes([]EncodeMessage{msg}, Mode1600_2, 0, 0)
+	msg := flex.EncodeMessage{Capcode: 1913, Type: "alpha", Text: "HELLO WORLD"}
+	wav, nBits, nSamples, err := flex.EncodeToWAVBytes([]flex.EncodeMessage{msg}, flex.Mode1600_2, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,11 +32,11 @@ func TestEncodeToWAV(t *testing.T) {
 }
 
 func TestDecodeReferenceWAV(t *testing.T) {
-	data, err := os.ReadFile("tests/test_6400.wav")
+	data, err := os.ReadFile("./test_6400.wav")
 	if err != nil {
-		t.Skip("tests/test_6400.wav not available")
+		t.Skip("./test_6400.wav not available")
 	}
-	msgs, err := DecodeFromAudio(data)
+	msgs, err := flex.DecodeFromAudio(data)
 	if err != nil {
 		t.Fatal(err)
 	}

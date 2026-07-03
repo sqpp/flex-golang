@@ -1,2 +1,5 @@
+bin/
 vendor/
-tools/
+*.exe
+out.wav
+ref.wav

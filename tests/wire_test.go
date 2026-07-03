@@ -1,7 +1,9 @@
-﻿package flex
+package flex_test
 
 import (
 	"testing"
+
+	flex "github.com/sqpp/flex-golang"
 )
 
 func TestReferenceWireRoundtrip(t *testing.T) {
@@ -10,20 +12,19 @@ func TestReferenceWireRoundtrip(t *testing.T) {
 
 	for name, cws := range map[string][]uint32{
 		"ref_wire": {refBIW, refAddr, 0, 0, 0, 0, 0, 0},
-		"our_wire": {flexEncodeWord(0x807), flexEncodeWord(0x8779), 0, 0, 0, 0, 0, 0},
+		"our_wire": {flex.ExportFlexEncodeWord(0x807), flex.ExportFlexEncodeWord(0x8779), 0, 0, 0, 0, 0, 0},
 	} {
-		codewords := make([]uint32, flexCodewords)
+		codewords := make([]uint32, flex.ExportFlexCodewordCount())
 		for i := range codewords {
-			codewords[i] = idleCodeword(i)
+			codewords[i] = flex.ExportIdleCodeword(i)
 		}
 		copy(codewords, cws)
 
-		bits, err := bitstreamFromCodewords(codewords, encodeModes[Mode1600_2], 0, 0)
+		wav, err := flex.ExportBitstreamFromCodewords(codewords, flex.Mode1600_2, 0, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		wav := modulateBits(bits, 1600)
-		frames, err := DemodulateRawFrames(wav)
+		frames, err := flex.DemodulateRawFrames(wav)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -35,10 +36,10 @@ func TestReferenceWireRoundtrip(t *testing.T) {
 }
 
 func refLayoutEncode(logical21 uint32) uint32 {
-	infoMSB := reverse21(logical21 & 0x1FFFFF)
-	poc := BCHEncode31_21(infoMSB) & 0x7FFFFFFF
-	rev := (poc << 1) | uint32(popCount32(poc)&1)
-	return reverse32(rev)
+	infoMSB := flex.ExportReverse21(logical21 & 0x1FFFFF)
+	poc := flex.ExportBCHEncode31_21(infoMSB) & 0x7FFFFFFF
+	rev := (poc << 1) | uint32(flex.ExportPopCount32(poc)&1)
+	return flex.ExportReverse32(rev)
 }
 
 func TestFindEncodeForRef(t *testing.T) {
@@ -57,15 +58,4 @@ func TestFindEncodeForRef(t *testing.T) {
 		t.Logf("%s logical=0x%05X refLayout=0x%08X target=0x%08X match=%v",
 			name, logical, ref, target, ref == target)
 	}
-}
-
-func flexWireLogical(w uint32) uint32 { return (w & 0x1FFFFF) ^ 0x1FFFFF }
-
-func oldLayoutEncode(logical21 uint32) uint32 {
-	poc := BCHEncode31_21(logical21 & 0x1FFFFF)
-	cw := (poc >> 10) | ((poc & 0x3FF) << 21)
-	if popCount32(cw)&1 != 0 {
-		cw |= 1 << 31
-	}
-	return cw
 }

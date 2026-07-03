@@ -1,36 +1,37 @@
-package flex
+package flex_test
 
 import (
 	"os"
 	"testing"
+
+	flex "github.com/sqpp/flex-golang"
 )
 
 func TestCompareReferenceCodewords(t *testing.T) {
-	refData, err := os.ReadFile("tests/test_1600.wav")
+	refData, err := os.ReadFile("./test_1600.wav")
 	if err != nil {
-		t.Skip("tests/test_1600.wav not available")
+		t.Skip("./test_1600.wav not available")
 	}
-	frames, err := DemodulateRawFrames(refData)
+	frames, err := flex.DemodulateRawFrames(refData)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("reference: %d raw frames", len(frames))
 
-	ourBits, err := BuildBitstream(EncodeMessage{
+	ourWav, _, _, err := flex.EncodeToWAVBytes([]flex.EncodeMessage{{
 		Capcode: 1913, Type: "alpha", Text: "HELLO WORLD",
-	}, Mode1600_2, 0, 0)
+	}}, flex.Mode1600_2, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ourWav := modulateBits(ourBits, 1600)
-	ourFrames, err := DemodulateRawFrames(ourWav)
+	ourFrames, err := flex.DemodulateRawFrames(ourWav)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("ours: %d raw frames", len(ourFrames))
 
 	for _, rf := range frames {
-		info1, _ := FLEXBCHDecode32(rf.Words[1])
+		info1, _ := flex.FLEXBCHDecode32(rf.Words[1])
 		capcode := int64(info1&0x1FFFFF) - 0x8000
 		if capcode != 1913 {
 			continue
@@ -55,7 +56,7 @@ func TestCompareReferenceCodewords(t *testing.T) {
 }
 
 func logWire(t *testing.T, tag string, idx int, wire uint32) {
-	logical, errs := FLEXBCHDecode32(wire)
+	logical, errs := flex.FLEXBCHDecode32(wire)
 	t.Logf("%s cw[%d] wire=0x%08X decode=0x%05X errs=%d xsum=%v",
-		tag, idx, wire, logical, errs, FLEXChecksum(logical))
+		tag, idx, wire, logical, errs, flex.ExportFLEXChecksum(logical))
 }

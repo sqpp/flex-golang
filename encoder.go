@@ -7,12 +7,23 @@ import (
 
 const (
 	Mode1600_2 = "1600/2"
+	Mode1600_4 = "1600/4"
 	Mode3200_2 = "3200/2"
 	Mode3200_4 = "3200/4"
 	Mode6400_4 = "6400/4"
 
 	flexSync1600_2 = 0x870C
+	flexSync1600_4 = 0xB068 // 3200 bps / 4-level @ 1600 sym/s (PDW "FLEX 3200")
+	flexSync3200_2 = 0x7B18
+	flexSync6400_4 = 0xDEA0 // 6400 bps / 4-level @ 3200 sym/s (PDW "FLEX 6400"); not 0x4C7C (ReFLEX)
 	flexCodewords  = PhaseWords // 88
+
+	// ReferenceMessage1913 is the alpha page PDW decodes from tests/test_1600.wav
+	// (capcode 1913, cycle 3, frame 111).
+	ReferenceMessage1913 = "NEW JOB: BED: B6 ROOM 19 BED 02 BED ID: 206192 STATUS: Dirty  PRECAUTIONS: *Standard"
+	ReferenceCapcode1913   = 1913
+	ReferenceCycle1913     = 3
+	ReferenceFrame1913     = 111
 )
 
 // EncodeMessage is one pager message to encode into a FLEX frame.
@@ -25,17 +36,30 @@ type EncodeMessage struct {
 type encodeMode struct {
 	name     string
 	syncCode uint16
-	baud     int
+	symRate  int // FLEX symbol rate on the data block (PDW g_sps)
 	levels   int
 }
 
+// bitRate returns the on-air bit rate shown by PDW (symRate × bits per symbol).
+func (m encodeMode) bitRate() int {
+	return m.symRate * (m.levels / 2)
+}
+
 var encodeModes = map[string]encodeMode{
+	// PDW syncs[] index 0: 0x870C → 1600 sym/s, 2-level
 	Mode1600_2: {Mode1600_2, flexSync1600_2, 1600, 2},
+	// PDW index 2: 0xB068 → 1600 sym/s, 4-level (PDW title: "FLEX 3200")
+	Mode1600_4: {Mode1600_4, flexSync1600_4, 1600, 4},
+	Mode3200_4: {Mode3200_4, flexSync1600_4, 1600, 4},
+	// PDW index 1: 0x7B18 → 3200 sym/s, 2-level
+	Mode3200_2: {Mode3200_2, flexSync3200_2, 3200, 2},
+	// PDW index 3: 0xDEA0 → 3200 sym/s, 4-level (PDW title: "FLEX 6400")
+	Mode6400_4: {Mode6400_4, flexSync6400_4, 3200, 4},
 }
 
 // EncodeModeNames returns modes supported by the encoder.
 func EncodeModeNames() []string {
-	return []string{Mode1600_2}
+	return []string{Mode1600_2, Mode1600_4, Mode3200_2, Mode3200_4, Mode6400_4}
 }
 
 func getEncodeMode(name string) (encodeMode, error) {
@@ -44,6 +68,65 @@ func getEncodeMode(name string) (encodeMode, error) {
 		return encodeMode{}, fmt.Errorf("encoder mode %q not supported yet (available: %v)", name, EncodeModeNames())
 	}
 	return m, nil
+}
+
+// EncodeModeBitRate returns the on-air bit rate for a FLEX mode (e.g. 1600 for "1600/2").
+func EncodeModeBitRate(modeName string) (int, error) {
+	m, err := getEncodeMode(modeName)
+	if err != nil {
+		return 0, err
+	}
+	return m.bitRate(), nil
+}
+
+// EncodeModeDetails describes a supported FLEX encoder mode.
+type EncodeModeDetails struct {
+	Name     string
+	SyncCode uint16
+	SymRate  int
+	Levels   int
+	BitRate  int
+}
+
+// LookupEncodeMode returns metadata for a FLEX encoder mode name.
+func LookupEncodeMode(modeName string) (EncodeModeDetails, error) {
+	m, err := getEncodeMode(modeName)
+	if err != nil {
+		return EncodeModeDetails{}, err
+	}
+	return EncodeModeDetails{
+		Name:     m.name,
+		SyncCode: m.syncCode,
+		SymRate:  m.symRate,
+		Levels:   m.levels,
+		BitRate:  m.bitRate(),
+	}, nil
+}
+
+// EncodeTypeFromFunction maps a FLEX vector function code to an encoder type string.
+func EncodeTypeFromFunction(function int) (string, error) {
+	switch PageType(function) {
+	case PageAlphanumeric:
+		return "alpha", nil
+	case PageStdNumeric, PageSpecialNum, PageNumberedNum:
+		return "numeric", nil
+	case PageTone:
+		return "tone", nil
+	default:
+		return "", fmt.Errorf("invalid function %d (supported: 2=tone, 3=numeric, 5=alphanumeric)", function)
+	}
+}
+
+// EncodeTypeLabel returns a stable type name for CLI/JSON output.
+func EncodeTypeLabel(typeName string) string {
+	switch typeName {
+	case "numeric":
+		return "numeric"
+	case "tone":
+		return "tone"
+	default:
+		return "alphanumeric"
+	}
 }
 
 func flexChecksumSum(info uint32) uint32 {
@@ -224,6 +307,12 @@ func appendBitsLSB(bits *[]byte, value uint32, n int) {
 	}
 }
 
+func appendBitsMSB(bits *[]byte, value uint32, n int) {
+	for i := n - 1; i >= 0; i-- {
+		*bits = append(*bits, byte((value>>uint(i))&1))
+	}
+}
+
 func appendInterleavedData(bits *[]byte, codewords []uint32) {
 	for block := 0; block < 11; block++ {
 		base := block * 8
@@ -239,13 +328,82 @@ func appendInterleavedData(bits *[]byte, codewords []uint32) {
 	}
 }
 
-// BuildBitstream assembles a complete FLEX 1600/2 bitstream.
-func BuildBitstream(msg EncodeMessage, modeName string, cycle, frame int) ([]byte, error) {
+// BuildBitstream assembles a complete FLEX frame symbol stream (header + data).
+func BuildBitstream(msg EncodeMessage, modeName string, cycle, frame int) (flexTransmission, error) {
 	codewords, mode, err := assembleCodewords(msg, modeName, cycle, frame)
 	if err != nil {
-		return nil, err
+		return flexTransmission{}, err
 	}
-	return bitstreamFromCodewords(codewords, mode, cycle, frame)
+	return buildTransmission(codewords, mode, cycle, frame), nil
+}
+
+func buildTransmission(codewords []uint32, mode encodeMode, cycle, frame int) flexTransmission {
+	var header []byte
+
+	for i := 0; i < 960; i++ {
+		if i&1 == 0 {
+			header = append(header, 0)
+		} else {
+			header = append(header, 1)
+		}
+	}
+
+	appendBitsMSBInv(&header, buildSync1(mode.syncCode), 64)
+
+	for i := 0; i < 16; i++ {
+		if i&1 == 0 {
+			header = append(header, 0)
+		} else {
+			header = append(header, 1)
+		}
+	}
+
+	fiw := encodeWord(buildFIWData(cycle, frame))
+	appendBitsLSB(&header, fiw, 32)
+
+	for i := 0; i < 4; i++ {
+		if i&1 == 0 {
+			header = append(header, 0)
+		} else {
+			header = append(header, 1)
+		}
+	}
+	const cPat = uint16(0xED84)
+	for i := 15; i >= 0; i-- {
+		header = append(header, byte((cPat>>uint(i))&1))
+	}
+	for i := 0; i < 4; i++ {
+		if i&1 == 0 {
+			header = append(header, 1)
+		} else {
+			header = append(header, 0)
+		}
+	}
+	const cInvPat = uint16(0x127B)
+	for i := 15; i >= 0; i-- {
+		header = append(header, byte((cInvPat>>uint(i))&1))
+	}
+
+	phases := makePhaseCodewords(codewords, mode.symRate, mode.levels)
+	var data []byte
+	appendMultiphaseSymbols(&data, phases, mode.symRate, mode.levels)
+
+	var trailer []byte
+	for i := 0; i < 64; i++ {
+		if i&1 == 0 {
+			trailer = append(trailer, 0)
+		} else {
+			trailer = append(trailer, 1)
+		}
+	}
+
+	return flexTransmission{
+		header:   header,
+		data:     data,
+		trailer:  trailer,
+		dataBaud: mode.symRate,
+		levels:   mode.levels,
+	}
 }
 
 func assembleCodewords(msg EncodeMessage, modeName string, cycle, frame int) ([]uint32, encodeMode, error) {
@@ -276,64 +434,8 @@ func assembleCodewords(msg EncodeMessage, modeName string, cycle, frame int) ([]
 	return codewords, mode, nil
 }
 
-func bitstreamFromCodewords(codewords []uint32, mode encodeMode, cycle, frame int) ([]byte, error) {
-	var bits []byte
-
-	for i := 0; i < 960; i++ {
-		if i&1 == 0 {
-			bits = append(bits, 0)
-		} else {
-			bits = append(bits, 1)
-		}
-	}
-
-	appendBitsMSBInv(&bits, buildSync1(mode.syncCode), 64)
-
-	for i := 0; i < 16; i++ {
-		if i&1 == 0 {
-			bits = append(bits, 0)
-		} else {
-			bits = append(bits, 1)
-		}
-	}
-
-	fiw := encodeWord(buildFIWData(cycle, frame))
-	appendBitsLSB(&bits, fiw, 32)
-
-	for i := 0; i < 4; i++ {
-		if i&1 == 0 {
-			bits = append(bits, 0)
-		} else {
-			bits = append(bits, 1)
-		}
-	}
-	const cPat = uint16(0xED84)
-	for i := 15; i >= 0; i-- {
-		bits = append(bits, byte((cPat>>uint(i))&1))
-	}
-	for i := 0; i < 4; i++ {
-		if i&1 == 0 {
-			bits = append(bits, 1)
-		} else {
-			bits = append(bits, 0)
-		}
-	}
-	const cInvPat = uint16(0x127B)
-	for i := 15; i >= 0; i-- {
-		bits = append(bits, byte((cInvPat>>uint(i))&1))
-	}
-
-	appendInterleavedData(&bits, codewords)
-
-	for i := 0; i < 64; i++ {
-		if i&1 == 0 {
-			bits = append(bits, 0)
-		} else {
-			bits = append(bits, 1)
-		}
-	}
-
-	return bits, nil
+func bitstreamFromCodewords(codewords []uint32, mode encodeMode, cycle, frame int) (flexTransmission, error) {
+	return buildTransmission(codewords, mode, cycle, frame), nil
 }
 
 // EncodeToWAVBytes encodes messages into a FLEX WAV file.
@@ -341,8 +443,7 @@ func EncodeToWAVBytes(messages []EncodeMessage, modeName string, cycle, frame in
 	if len(messages) == 0 {
 		return nil, 0, 0, fmt.Errorf("no messages to encode")
 	}
-	mode, err := getEncodeMode(modeName)
-	if err != nil {
+	if _, err := getEncodeMode(modeName); err != nil {
 		return nil, 0, 0, err
 	}
 
@@ -351,13 +452,14 @@ func EncodeToWAVBytes(messages []EncodeMessage, modeName string, cycle, frame in
 		return nil, 0, 0, err
 	}
 
-	wav := modulateBits(bits, mode.baud)
+	wav := modulateTransmission(bits)
+	nSymbols := symbolCount(bits)
 	numSamples := 0
 	if len(wav) >= 44 {
 		dataSize := int(wav[40]) | int(wav[41])<<8 | int(wav[42])<<16 | int(wav[43])<<24
 		numSamples = dataSize / 2
 	}
-	return wav, len(bits), numSamples, nil
+	return wav, nSymbols, numSamples, nil
 }
 
 // EncodeToWAVFile writes a FLEX WAV file.

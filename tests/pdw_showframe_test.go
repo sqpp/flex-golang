@@ -1,26 +1,30 @@
-package flex
+package flex_test
 
 import (
 	"testing"
+
+	flex "github.com/sqpp/flex-golang"
 )
 
 func TestPDWShowframeSimulation(t *testing.T) {
-	ourBits, _ := BuildBitstream(EncodeMessage{
+	wav, _, _, err := flex.EncodeToWAVBytes([]flex.EncodeMessage{{
 		Capcode: 1913, Type: "alpha", Text: "HELLO WORLD",
-	}, Mode1600_2, 3, 111)
-	wav := modulateBits(ourBits, 1600)
-	frames, _ := DemodulateRawFrames(wav)
+	}}, flex.Mode1600_2, 3, 111)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames, _ := flex.DemodulateRawFrames(wav)
 	if len(frames) == 0 {
 		t.Fatal("no frames")
 	}
 
-	frame := make([]int64, PhaseWords)
-	for i := 0; i < PhaseWords; i++ {
-		log, _ := PDWDecodeWire(frames[0].Words[i])
+	frame := make([]int64, flex.PhaseWords)
+	for i := 0; i < flex.PhaseWords; i++ {
+		log, _ := flex.PDWDecodeWire(frames[0].Words[i])
 		frame[i] = log
 	}
 
-	if !pdwXsumchk(frame[0]) {
+	if !flex.ExportPDWXsumchk(frame[0]) {
 		t.Fatal("BIW xsum fail")
 	}
 
@@ -32,7 +36,7 @@ func TestPDWShowframeSimulation(t *testing.T) {
 
 	j := asa
 	vb := vsa + j - asa
-	if !pdwXsumchk(frame[vb]) {
+	if !flex.ExportPDWXsumchk(frame[vb]) {
 		t.Fatalf("vector xsum fail at %d logical=0x%05X", vb, frame[vb]&0x1FFFFF)
 	}
 	vt := (frame[vb] >> 4) & 0x07
@@ -51,7 +55,7 @@ func TestPDWShowframeSimulation(t *testing.T) {
 	t.Logf("capcode=%d frag=%d msg words %d..%d header=0x%05X",
 		capcode, frag, w1, w2, frame[w1]&0x1FFFFF)
 
-	msgs, _ := DecodeFromAudio(wav)
+	msgs, _ := flex.DecodeFromAudio(wav)
 	if len(msgs) != 1 || msgs[0].Text != "HELLO WORLD" {
 		t.Fatalf("decode: %+v", msgs)
 	}

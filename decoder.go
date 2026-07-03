@@ -19,7 +19,12 @@ var flexModes = []struct {
 	{0xB068, 1600, 4},
 	{0x7B18, 3200, 2},
 	{0xDEA0, 3200, 4},
-	{0x4C7C, 3200, 4},
+	{0x4C7C, 3200, 4}, // ReFLEX 25; same symbol rate as FLEX 6400/4
+}
+
+// flexBitRate converts FLEX symbol rate + levels to the PDW bit-rate label.
+func flexBitRate(symRate, levels int) int {
+	return symRate * (levels / 2)
 }
 
 // PhaseWords is the number of 32-bit codewords per phase of a FLEX
@@ -431,6 +436,9 @@ func (d *Demodulator) decodeBlock() []Message {
 	if numPhases < 1 {
 		numPhases = 1
 	}
+	if numPhases > 4 {
+		numPhases = 4
+	}
 
 	var allMsgs []Message
 	phaseChars := []byte{'A', 'B', 'C', 'D'}
@@ -442,6 +450,10 @@ func (d *Demodulator) decodeBlock() []Message {
 			rf.Frame = d.frame
 			copy(rf.Words[:], d.words[0:PhaseWords])
 			d.capturedFrames = append(d.capturedFrames, rf)
+		}
+
+		if p*PhaseWords+PhaseWords > len(d.words) {
+			break
 		}
 
 		infos := make([]uint32, PhaseWords)
@@ -457,7 +469,7 @@ func (d *Demodulator) decodeBlock() []Message {
 			}
 		}
 		//fmt.Printf("DEBUG: Phase %c decoded %d valid codewords out of %d\n", phaseChars[p], errCnt, PhaseWords)
-		msgs := DecodePhase(infos, corr, d.frame, d.cycle, int(d.syncBaud), int(d.syncLevels), phaseChars[p])
+		msgs := DecodePhase(infos, corr, d.frame, d.cycle, flexBitRate(int(d.syncBaud), int(d.syncLevels)), int(d.syncLevels), phaseChars[p])
 		allMsgs = append(allMsgs, msgs...)
 	}
 

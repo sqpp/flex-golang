@@ -6,6 +6,11 @@ import (
 	"fmt"
 )
 
+const (
+	BaudRate1600 = 1600
+	BaudRate3200 = 3200
+)
+
 const FrameSyncWord = 0x9c9acf1e
 const FrameSyncWordInverted = 0x636530e1
 const IdleBlockWord = 0x00000000

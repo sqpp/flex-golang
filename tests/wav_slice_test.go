@@ -1,12 +1,14 @@
-package flex
+package flex_test
 
 import (
 	"os"
 	"testing"
+
+	flex "github.com/sqpp/flex-golang"
 )
 
 func TestReferenceWAVSlice(t *testing.T) {
-	refData, err := os.ReadFile("tests/test_1600.wav")
+	refData, err := os.ReadFile("./test_1600.wav")
 	if err != nil {
 		t.Skip("no reference wav")
 	}
@@ -14,7 +16,7 @@ func TestReferenceWAVSlice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	frames, _ := DemodulateRawFrames(refData)
+	frames, _ := flex.DemodulateRawFrames(refData)
 	t.Logf("reference: sliced %d bits, PLL frames=%d", len(sliced), len(frames))
 	if len(frames) > 0 {
 		t.Logf("  first frame cycle=%d frame=%d", frames[0].Cycle, frames[0].Frame)
@@ -22,40 +24,22 @@ func TestReferenceWAVSlice(t *testing.T) {
 }
 
 func TestBitstreamThroughWAVSlice(t *testing.T) {
-	bits, err := BuildBitstream(EncodeMessage{
+	wav, _, _, err := flex.EncodeToWAVBytes([]flex.EncodeMessage{{
 		Capcode: 1913, Type: "alpha", Text: "HELLO WORLD",
-	}, Mode1600_2, 3, 111)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wav := modulateBits(bits, 1600)
-	sliced, err := sliceWAVPDWStyle(wav)
+	}}, flex.Mode1600_2, 3, 111)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	minLen := len(bits)
-	if len(sliced) < minLen {
-		minLen = len(sliced)
+	frames, _ := flex.DemodulateRawFrames(wav)
+	if len(frames) == 0 {
+		t.Fatal("PLL demod produced no frames")
 	}
-	errors := 0
-	for i := 0; i < minLen; i++ {
-		if bits[i] != sliced[i] {
-			errors++
-		}
-	}
-	t.Logf("expected %d bits, sliced %d, errors %d (%.2f%%)",
-		len(bits), len(sliced), errors, 100*float64(errors)/float64(minLen))
-
-	frames, _ := DemodulateRawFrames(wav)
-	if len(frames) > 0 {
-		t.Logf("PLL demod: cycle=%d frame=%d cw0=0x%08X cw1=0x%08X cw2=0x%08X",
-			frames[0].Cycle, frames[0].Frame,
-			frames[0].Words[0], frames[0].Words[1], frames[0].Words[2])
-	}
+	t.Logf("PLL demod: cycle=%d frame=%d cw0=0x%08X cw1=0x%08X cw2=0x%08X",
+		frames[0].Cycle, frames[0].Frame,
+		frames[0].Words[0], frames[0].Words[1], frames[0].Words[2])
 }
 
-// sliceWAVPDWStyle approximates PDW sound_in.cpp threshold slicing on 16-bit WAV.
 func sliceWAVPDWStyle(wav []byte) ([]byte, error) {
 	samples, rate, err := readWAVSamples(wav)
 	if err != nil {
@@ -98,7 +82,7 @@ func readWAVSamples(wav []byte) ([]int16, int, error) {
 	n := len(data) / 2
 	samples := make([]int16, n)
 	for i := 0; i < n; i++ {
-		samples[i] = int16(data[i*2]) | int16(data[i*2+1])<<8
+		samples[i] = int16(data[i*2]) | int16(data[i+1])<<8
 	}
 	return samples, rate, nil
 }
