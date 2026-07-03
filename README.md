@@ -104,4 +104,4 @@ func main() {
 - **Burst Encoder (`flex-burst`)**: Pack multiple messages into single frames (Pending)
 
 ## License
-Built natively for pure-Go portability. Decoding architecture originally inspired by PDW and multimon-ng.
+

@@ -11,6 +11,33 @@ const FrameSyncWordInverted = 0x636530e1
 const IdleBlockWord = 0x00000000
 const IdleBlockWord2 = 0xFFFFFFFF
 
+// DemodulateRawFrames returns MSB-assembled phase-A codewords for each synced frame.
+func DemodulateRawFrames(wavData []byte) ([]RawPhaseFrame, error) {
+	dataOffset := bytes.Index(wavData, []byte("data"))
+	startIdx := 44
+	if dataOffset != -1 {
+		startIdx = dataOffset + 8
+	}
+	var sampleRate uint32 = 48000
+	if len(wavData) > 28 {
+		sampleRate = binary.LittleEndian.Uint32(wavData[24:28])
+	}
+	d := NewDemodulator(sampleRate)
+	lpfBuf := make([]float32, 8)
+	lpfIdx := 0
+	var lpfSum float32
+	for i := startIdx; i < len(wavData)-1; i += 2 {
+		rawSample := float32(int16(binary.LittleEndian.Uint16(wavData[i:])))
+		lpfSum -= lpfBuf[lpfIdx]
+		lpfBuf[lpfIdx] = rawSample
+		lpfSum += rawSample
+		lpfIdx = (lpfIdx + 1) % len(lpfBuf)
+		sample := lpfSum / float32(len(lpfBuf))
+		d.PushSample(sample)
+	}
+	return d.capturedFrames, nil
+}
+
 // DecodeFromAudio decodes FLEX messages from a 1600 baud 2-FSK WAV file
 func DecodeFromAudio(wavData []byte) ([]Message, error) {
 	return DecodeFromAudioWithBaudRate(wavData, BaudRate1600)

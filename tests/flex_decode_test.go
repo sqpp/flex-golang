@@ -15,9 +15,9 @@ import (
 // FLEX: 1600/2/A/22/048 A:0001789 ALN: HELP! HELP! HELP! HELP! HELP! HELP! HELP!  (frame 110)
 // FLEX: 1600/2/A/22/049 A:0001913 ALN: Call Me ASAP!   (frame 111)
 func TestDecodeFlexWAV(t *testing.T) {
-	wavData, err := os.ReadFile("./test.wav")
+	wavData, err := os.ReadFile("./test_1600.wav")
 	if err != nil {
-		t.Skip("./test.wav not found:", err)
+		t.Skip("./test_1600.wav not found:", err)
 	}
 
 	msgs, err := flex.DecodeFromAudio(wavData)

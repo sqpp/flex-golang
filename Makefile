@@ -17,8 +17,10 @@ LDFLAGS := -X 'github.com/sqpp/flex-golang.Version=$(VERSION)' \
            -X 'github.com/sqpp/flex-golang.BuildGoVer=$(GO_VERSION)'
 
 BINARY_NAME=flex-decode
+ENCODE_NAME=flex-encode
 ifeq ($(OS),Windows_NT)
     BINARY_NAME=flex-decode.exe
+    ENCODE_NAME=flex-encode.exe
 endif
 
 # Default target
@@ -31,12 +33,14 @@ build:
 	@echo "Building FLEX-GO v$(VERSION)..."
 	@mkdir -p bin
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) ./cmd/flex-decode
+	go build -ldflags "$(LDFLAGS)" -o bin/$(ENCODE_NAME) ./cmd/flex-encode
 	@echo "Build complete!"
 
 # Install tools
 .PHONY: install
 install:
 	go install -ldflags "$(LDFLAGS)" ./cmd/flex-decode
+	go install -ldflags "$(LDFLAGS)" ./cmd/flex-encode
 
 # Test
 .PHONY: test

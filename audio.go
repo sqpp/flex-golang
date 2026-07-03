@@ -101,29 +101,30 @@ func ConvertToAudioFSK(data []byte, baudRate int) []byte {
 }
 
 func createWAVFile(samples []int16) []byte {
+	return createWAVFileAtRate(samples, SampleRate)
+}
+
+func createWAVFileAtRate(samples []int16, sampleRate uint32) []byte {
 	var buf bytes.Buffer
 
 	dataSize := uint32(len(samples) * 2)
 	fileSize := 36 + dataSize
-	byteRate := uint32(SampleRate * NumChannels * BitsPerSample / 8)
+	byteRate := uint32(sampleRate * NumChannels * BitsPerSample / 8)
 	blockAlign := uint16(NumChannels * BitsPerSample / 8)
 
-	// RIFF header
 	buf.WriteString("RIFF")
 	binary.Write(&buf, binary.LittleEndian, fileSize)
 	buf.WriteString("WAVE")
 
-	// fmt chunk
 	buf.WriteString("fmt ")
-	binary.Write(&buf, binary.LittleEndian, uint32(16))            // chunk size
-	binary.Write(&buf, binary.LittleEndian, uint16(1))             // PCM format
-	binary.Write(&buf, binary.LittleEndian, uint16(NumChannels))   // channels
-	binary.Write(&buf, binary.LittleEndian, uint32(SampleRate))    // sample rate
-	binary.Write(&buf, binary.LittleEndian, byteRate)              // byte rate
-	binary.Write(&buf, binary.LittleEndian, blockAlign)            // block align
-	binary.Write(&buf, binary.LittleEndian, uint16(BitsPerSample)) // bits per sample
+	binary.Write(&buf, binary.LittleEndian, uint32(16))
+	binary.Write(&buf, binary.LittleEndian, uint16(1))
+	binary.Write(&buf, binary.LittleEndian, uint16(NumChannels))
+	binary.Write(&buf, binary.LittleEndian, sampleRate)
+	binary.Write(&buf, binary.LittleEndian, byteRate)
+	binary.Write(&buf, binary.LittleEndian, blockAlign)
+	binary.Write(&buf, binary.LittleEndian, uint16(BitsPerSample))
 
-	// data chunk
 	buf.WriteString("data")
 	binary.Write(&buf, binary.LittleEndian, dataSize)
 

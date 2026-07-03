@@ -60,6 +60,7 @@ type Message struct {
 	LongAddress  bool     `json:"LongAddress"`
 	Type         PageType `json:"Function"`
 	Text         string   `json:"Message"`
+	Frag         byte     `json:"Frag"`
 	FragFlag     byte     `json:"FragFlag,omitempty"`
 	Cycle        int      `json:"Cycle"`
 	Frame        int      `json:"Frame"`
@@ -179,7 +180,7 @@ func DecodePhase(words []uint32, corr []int, frame, cycle, baud, levels int, pha
 
 		switch vt {
 		case PageAlphanumeric, PageSecure:
-			msg.Text, msg.FragFlag, msg.Corrected = decodeAlpha(words, corr, viw, longAddr, vIdx, msg.Corrected)
+			msg.Text, msg.Frag, msg.FragFlag, msg.Corrected = decodeAlpha(words, corr, viw, longAddr, vIdx, msg.Corrected)
 			out = append(out, msg)
 
 		case PageStdNumeric, PageSpecialNum, PageNumberedNum:
@@ -248,41 +249,48 @@ func decodeLongCapcode(aw1, aw2 uint32) int64 {
 //
 // The word at mw1 is the header word:
 //   - bits 12..11 → frag  (0=last/only, 1..2=middle, 3=first)
-//   - bit  10     → cont  (1=fragment, 0=final piece)
+//   - bit  10     → cont
 //
-// Characters are packed three-per-word as 7-bit values at bits 0, 7, 14.
-// ETX (0x03) terminates the message.  The first character of mw1 is only
-// output when frag == 3 (i.e. message begins at this word).
-func decodeAlpha(words []uint32, corr []int, viw uint32, longAddr bool, vIdx int, corrSoFar int) (text string, fragFlag byte, corrTotal int) {
+// The message characters are packed 7-bits each.
+func decodeAlpha(words []uint32, corr []int, viw uint32, longAddr bool, vIdx int, corrSoFar int) (text string, frag byte, fragFlag byte, corrTotal int) {
 	corrTotal = corrSoFar
 
-	// Decode w1/w2 from VIW exactly as multimon does:
-	//   int w1 = viw >> 7;
-	//   int w2 = w1 >> 7;
-	//   w1 = w1 & 0x7f;
-	//   w2 = (w2 & 0x7f) + w1 - 1;
 	tmp := viw >> 7
 	tmp2 := tmp >> 7
 	mw1 := int(tmp & 0x7F)
 	mw2 := int((tmp2&0x7F)+uint32(mw1)) - 1
 
-	if mw1 <= 0 || mw2 < mw1 || mw2 >= len(words) {
-		return "", 'K', corrTotal
-	}
+	var hw uint32
+	var actualMw1 int
+	var actualMw2 int
 
-	// Long address: the second vector word is consumed as a data header,
-	// so the actual message start is one later and end is one earlier.
 	if longAddr {
-		// mw1 is already the data start (PDW: w2-- for long addresses)
-		mw2--
-		if mw2 < mw1 {
-			return "", 'K', corrTotal
+		// For long addresses, the header word is the SECOND vector word (vIdx + 1).
+		if vIdx+1 >= len(words) {
+			return "", 0, 'K', corrTotal
 		}
+		hw = words[vIdx+1]
+		actualMw1 = mw1
+		actualMw2 = mw2 - 1
+		if corr != nil && vIdx+1 < len(corr) && corr[vIdx+1] > 0 {
+			corrTotal += corr[vIdx+1]
+		}
+	} else {
+		// For short addresses, the header word is at mw1.
+		if mw1 >= len(words) {
+			return "", 0, 'K', corrTotal
+		}
+		hw = words[mw1]
+		actualMw1 = mw1 + 1
+		actualMw2 = mw2
 	}
 
-	// Header word — extract frag / cont bits, then advance mw1.
-	hw := words[mw1]
-	frag := (hw >> 11) & 0x03
+	if actualMw1 <= 0 || actualMw2 < actualMw1 || actualMw2 >= len(words) {
+		return "", 0, 'K', corrTotal
+	}
+
+	// Header word — extract frag / cont bits
+	frag = byte((hw >> 11) & 0x03)
 	cont := (hw >> 10) & 0x01
 
 	switch {
@@ -296,49 +304,65 @@ func decodeAlpha(words []uint32, corr []int, viw uint32, longAddr bool, vIdx int
 
 	// Collect BCH corrections for message words.
 	if corr != nil {
-		for k := mw1; k <= mw2 && k < len(corr); k++ {
+		for k := actualMw1; k <= actualMw2 && k < len(corr); k++ {
 			if corr[k] > 0 {
 				corrTotal += corr[k]
 			}
 		}
 	}
 
-	mw1++ // move past header word
-
 	var sb strings.Builder
-	for wi := mw1; wi <= mw2; wi++ {
-		dw := words[wi]
 
-		// First character of the first word is only included when
-		// frag == 3 (meaning this frame starts a new message).
-		if wi > mw1 || frag != 0x03 {
-			ch := byte(dw & 0x7F)
-			if ch == 0x03 {
-				return sb.String(), fragFlag, corrTotal
-			}
-			if ch >= 0x20 {
-				sb.WriteByte(ch)
-			}
+	// For short addresses, the header word (mw1) contains characters.
+	// For long addresses, the header word (vIdx+1) is purely structural and contains NO characters.
+	// PDW skips the header word for short-address complete messages (frag==3).
+	if !longAddr && frag != 0x03 {
+		ch3 := byte((hw >> 14) & 0x7F)
+		if ch3 == 0x03 {
+			return sb.String(), frag, fragFlag, corrTotal
 		}
-
-		ch := byte((dw >> 7) & 0x7F)
-		if ch == 0x03 {
-			return sb.String(), fragFlag, corrTotal
-		}
-		if ch >= 0x20 {
-			sb.WriteByte(ch)
-		}
-
-		ch = byte((dw >> 14) & 0x7F)
-		if ch == 0x03 {
-			return sb.String(), fragFlag, corrTotal
-		}
-		if ch >= 0x20 {
-			sb.WriteByte(ch)
+		if ch3 >= 0x20 {
+			sb.WriteByte(ch3)
 		}
 	}
 
-	return sb.String(), fragFlag, corrTotal
+	// Extract characters from data words
+	firstWord := true
+	for wi := actualMw1; wi <= actualMw2; wi++ {
+		dw := words[wi]
+
+		ch1 := byte(dw & 0x7F)
+		// First content word bits 0-6 hold the signature; PDW skips them on complete messages.
+		skipCh1 := firstWord && frag == 0x03
+		firstWord = false
+
+		if !skipCh1 {
+			if ch1 == 0x03 {
+				return sb.String(), frag, fragFlag, corrTotal
+			}
+			if ch1 >= 0x20 {
+				sb.WriteByte(ch1)
+			}
+		}
+
+		ch2 := byte((dw >> 7) & 0x7F)
+		if ch2 == 0x03 {
+			return sb.String(), frag, fragFlag, corrTotal
+		}
+		if ch2 >= 0x20 {
+			sb.WriteByte(ch2)
+		}
+
+		ch3 := byte((dw >> 14) & 0x7F)
+		if ch3 == 0x03 {
+			return sb.String(), frag, fragFlag, corrTotal
+		}
+		if ch3 >= 0x20 {
+			sb.WriteByte(ch3)
+		}
+	}
+
+	return sb.String(), frag, fragFlag, corrTotal
 }
 
 // ─── Numeric ──────────────────────────────────────────────────────────────────

@@ -7,10 +7,11 @@ IF "%1"=="test" GOTO Test
 GOTO Help
 
 :Build
-echo Building flex-decode...
+echo Building flex-decode and flex-encode...
 if not exist bin mkdir bin
 go build -o bin/flex-decode.exe ./cmd/flex-decode
-echo Build complete! Binary is in the bin\ directory.
+go build -o bin/flex-encode.exe ./cmd/flex-encode
+echo Build complete! Binaries are in the bin\ directory.
 GOTO End
 
 :Clean

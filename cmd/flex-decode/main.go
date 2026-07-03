@@ -19,6 +19,8 @@ func main() {
 	versionOutput := flag.Bool("v", false, "Show version information")
 	versionOutputLong := flag.Bool("version", false, "Show version information")
 
+	noTones := flag.Bool("no-tones", false, "Filter out tone-only messages")
+
 	flag.Parse()
 
 	if *versionOutput || *versionOutputLong {
@@ -62,10 +64,16 @@ func main() {
 				msgType = "tone"
 			}
 
+			outText := msg.Text
+			if msg.Type == flex.PageAlphanumeric && msg.Frag != 3 {
+				fragNum := (3 - msg.Frag) + 1
+				outText = fmt.Sprintf("[Continued message - Fragment #%d] %s", fragNum, msg.Text)
+			}
+
 			jsonMessages[i] = map[string]interface{}{
 				"address":  msg.Capcode,
 				"function": int(msg.Type),
-				"message":  msg.Text,
+				"message":  outText,
 				"type":     msgType,
 			}
 		}
@@ -103,12 +111,25 @@ func main() {
 		baudStr := fmt.Sprintf("FLEX-%d/%d", bitRate, levels)
 		fmt.Printf("%s: Decoded messages:\n", baudStr)
 		for _, msg := range decodedMessages {
+			if *noTones && msg.Type == flex.PageTone {
+				continue
+			}
+
 			msgType := "ALPHA"
-			if msg.IsNumeric {
+			if msg.Type == flex.PageTone {
+				msgType = "TONE"
+			} else if msg.IsNumeric {
 				msgType = "NUMERIC"
 			}
+
+			outText := msg.Text
+			if msg.Type == flex.PageAlphanumeric && msg.Frag != 3 {
+				fragNum := (3 - msg.Frag) + 1
+				outText = fmt.Sprintf("[Continued message - Fragment #%d] %s", fragNum, msg.Text)
+			}
+
 			fmt.Printf("Address: %07d  Function: %d  %-7s  Message: %s\n",
-				msg.Capcode, int(msg.Type), msgType, msg.Text)
+				msg.Capcode, int(msg.Type), msgType, outText)
 		}
 	}
 }
